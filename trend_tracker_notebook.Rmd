@@ -1,0 +1,557 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+
+To Do
+
+////DONE////
+**Phase 1: task scheduler + database**
+## Script
+- Convert script into single use 
+- Taskschedule
+- write to csv hourly between 8am to 10PM that merges into a large csv that is trends{today}.csv (temporary)
+///////////
+
+////DONE////
+**Phase 2: improve the tool**
+## When trend is selected
+- scrape 50 popular tweets
+- show top 3 after removing duplicates
+- make small wordcloud
+///////////
+
+**Phase 3: tool & hosting**
+## Create widget from a database
+- Move functions to Shiny App (or Dashboard like Dash)
+
+Pages:
+- What's Happening: girafe and tweet volume
+- Trend Inspector: network plot, wordcloud, top tweets 
+- My Trends: create categories with keywords to track, see what trends pertain to them
+
+- see dropdown of trends from What's Happening
+- make them customizable
+- host on a site (github.io)
+
+## Phase 4: Move to Database Storage
+- csvs of datasets for shiny app to minimize loading
+- Open a MySQL/POSTGRESQL database
+- Write to database tables instead of csv
+
+## other ideas
+- calendar to select another date/hour from, possibly date ranges with facet_wrap?
+- Find accounts under a condition, follow all those accounts.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(rtweet)
+library(lubridate)
+library(ggiraph)
+library(tidytext)
+library(SnowballC)
+```
+
+# Read in Trends
+
+Read in the trends in United States from the database. Can be expanded to other countries, but only english places due to stemming & anti-join issues: (Australia, EU, USA, Canada).
+
+(Premium) - can look at local trends in the user's city.
+
+```{r}
+# trends from today
+daily_trends <- read_csv(str_glue("new_trends_{Sys.Date()}.csv")) %>%
+  filter(as_of >= Sys.Date()) # useful once hooked to db 
+
+# trends this hour
+latest_trends <- daily_trends %>%
+  filter(as_of == max(as_of)) 
+
+# what new trends are there?
+new_trends <- latest_trends %>%
+  anti_join(daily_trends %>%
+              filter(as_of < max(as_of)), by = "cleaned_trend") %>%
+  arrange(desc(tweet_volume))
+```
+
+- if trend is detected, alert subscriber. Only alert if a new trend... perhaps require it be trending for 2 hours.
+
+```{r}
+# identify if trend is new (only alert subscriber if trend is new)
+latest_trends <- latest_trends %>%
+  mutate(new = cleaned_trend %in% new_trends$cleaned_trend)
+```
+
+# Read in Tweets
+
+```{r}
+# this is the entire day of tweets for lookups
+daily_tweets <- read_csv(str_glue("trend_tweets_{Sys.Date()}.csv")) %>%
+  filter(time_collected >= Sys.Date()) # useful once hooked to db 
+
+# tweets for trends this hour
+latest_tweets <- read_csv(str_glue("trend_tweets_{Sys.Date()}.csv")) %>%
+  filter(time_collected == max(time_collected))
+```
+
+# Process the tweets
+
+Tokenize tweet text into words for analysis.
+
+Decide how to process:
+- want to keep twitter handles (@)? (unnest_tokens(.x, token = ngram, n = 1))
+- custom tokenizing by replacing punctations with a space, tokenize using " ", then str_trim?
+latest_tweets %>%
+mutate(str_replace_all(text, "[:punct:]))
+unnest_tokens(word, txt, token = "regex", pattern = " ")
+
+argument: to_lower	
+Whether to convert tokens to lowercase. If tokens include URLS (such as with token = "tweets"), such converted URLs may no longer be correct.
+
+argument: strip_punct
+remove punctuation?
+
+```{r}
+unwanted_words <- c("people", "ill", "aint", "#covid19", "https", "didnt", "youre", "trend", "trends", "amp", "les", "des", "dont", "arent", "hes", "shes", "heres", "theyre", "yall", "watch", "time", "shit")
+
+
+# USE FULL SET OF TWEETS, NOT JUST LATEST TO BUILD POF
+
+trend_tokenized <- latest_tweets %>%
+  unnest_tokens(word, text, token = "tweets", drop = FALSE) %>%
+  filter(#!str_detect(word, "^@"),
+    str_detect(word, "[a-z0-9-]+"),
+    nchar(word) > 1,
+    word != normalized_trend,
+    word != str_remove(normalized_trend, "#"),
+    !word %in% unwanted_words,
+    !str_detect(word, "https")) %>%
+  anti_join(stop_words, by = "word") %>%
+  mutate(stem = wordStem(word))
+```
+
+
+```{r}
+# store the popular tweets, do I store this for later?
+#popular_tweet_sample <- latest_tweets %>%
+#  group_by(normalized_trend) %>%
+#  arrange(desc(normalized_trend), desc(favorite_count)) %>%
+#  slice(1:3)
+
+# another way to get top trends
+#trend_tokenized %>%
+#  group_by(status_url) %>%
+#  mutate(number_of_duplicate_tweets = row_number()) %>%
+#  filter(number_of_duplicate_tweets < 2) %>%
+#  group_by(normalized_trend) %>%
+#  arrange(desc(normalized_trend), desc(favorite_count)) %>%
+#  slice(1:3) %>%
+#  select(status_id)
+```
+
+# Page 3: Custom Keywords
+
+Make a category of words, get an alert when it locks on an emerging trend. 
+
+Add words to find trends that mention these words
+ex trump = You are counting tweets with the word trump anywhere in it.
+
+Use quotes if you want an exact match only (no stemming performed):
+ex "donald trump" = You are counting tweets that say donald trump if it appears in that order.
+
+use word1 AND word2 if you want tweets must have both words in a tweet (anywhere):
+ex. donald AND trump =  You are counting tweets that will mention donald, and later mention trump.
+
+- Showcase example categories with a history of trends that they triggered for people to see how it works. (maybe just phrases instead of a trend)
+(easier with a db, probably use map_dfr(list_of_daily_trends, read_csv))
+- Stored in the eventual database functions to filter for user_trend_id
+
+(Premium) more categories cost money
+
+## Simulated Workflow
+
+Pull this data from a db. CUrrently dummy data.
+
+User creates their categories:
+
+- allow special weights so particular words/phrases can be prioritized (ex. unemployment, spiritual, stock market, S&P)
+
+```{r}
+# negative_economy_words - which are positive about economy?
+category_group_1 <- data.frame(category = "Negative Economy", 
+                               keywords = c("bear", "debt",  "slowed", "fall", "fear", "jobless", "layoff", "loss", "plung", "problem", "recess", "slump", "unemployment"))
+
+# positive_economy_words - which are negative about economy?
+category_group_2 <- data.frame(category = "Positive Economy", 
+                               keywords = c("bull", "S&P", "DOW", "grow", "growth", "inflation", "investing", "profit"))
+
+## climate_change_words- which are about cimate change
+category_group_3 <-  data.frame(category = "Climate Change", 
+                                keywords = c("climate", "flood", "environment", "gasoline", "oil", "fuel", "melting", "fire", "burning", "global warming"))
+
+## tarot card trends
+category_group_4 <- data.frame(category = "Personal Brand - Tarot", 
+                               keywords = c("tarot", "card reading", "astrology", "numerology", "chakra", "horoscope", "spiritual"))
+
+## politcal trends
+category_group_5 <- data.frame(category = "Political Figures", 
+                               keywords = c("obama", '"donald trump"', "election AND bidens", "liberal", "republican", '"democrats"', "bernie", "bernie sanders", '"bernie sanders"', "sanders", "biden", "DNC", "liberals", "pelosi", "election"))
+
+## clothing brands
+category_group_6 <- data.frame(category = "Clothing Trends", 
+                               keywords = c("nike", "adidas", "shoes", "jacket", "sweater", "shirt", "pants", "dress", "clothing", "apparel", "fashion", "streetwear"))
+
+## data privacy
+category_group_7 <- data.frame(category = "Data Privacy", 
+                               keywords = c("data AND breach", "data", "privacy", 'data AND "privacy"', "data AND leak"))
+
+## Medicine
+category_group_8 <- data.frame(category = "Medicine", 
+                               keywords = c("hospital", "safety", "vaccine", "medicine", "antidote", '"first responders"', "nurse", "doctor", "patient", "sick", "illness", "medical"))
+
+## Fitness
+category_group_9 <- data.frame(category = "Fitness", 
+                               keywords = c("exercise", "workout", "cardio", "strength", "runner", "jogging"))
+
+## Tech
+category_group_10 <- data.frame(category = "Tech", 
+                                keywords = c("ipad", "iphone", "ipod", "apple", "microsoft", "tablet", "samsung", "tesla", "musk", "uber", "lyft", "alphabet", "$AAPL"))
+
+## Economics
+category_group_11 <- data.frame(category = "Economics", 
+                                keywords = c("earnings", "inflation", "invest", "DOW", "gains", "investors", "economy", "YTD", "S&P", '"stock market"', '"supply chain"', "forecast", "budget"))
+
+## Jobs
+category_group_12 <- data.frame(category = "Jobs", 
+                                keywords = c("lay off", "laid off", "laid-off", "employees", "jobs", "union", "payroll", "worker", "wage", "hiring", "unemployment", "employment", "retire"))
+
+## City/Housing
+category_group_13 <- data.frame(category = "City & Housing", 
+                                keywords = c("neighbourhood", "residents", "rent", "social AND net", "social AND issues", "population", "housing", "transit", "apartment", "suburb", "homes", '"real estate"'))
+```
+
+We process the list of words and add some metadata before saving to db.
+
+```{r}
+add_category_metadata <- function(category_list){
+  category_list %>%
+    mutate(bigram = ifelse(str_detect(keywords, " "), TRUE, FALSE),
+           literal_string = ifelse(str_detect(keywords, '"'), TRUE, FALSE),  # quotes ignoring stemming already does this, can remove
+           conditional = ifelse(str_detect(keywords, "AND"), TRUE, FALSE),
+    ) %>%
+    mutate_if(is.factor, as.character) %>% # this class fix should be done when category_group is stored
+    mutate(stem = wordStem(keywords), 
+           stem = str_remove_all(stem, '"'))
+}
+
+add_category_metadata(category_group_7)
+
+# apply transformation before entering into the db
+```
+
+Pull their categories and check trending tweets for matches
+
+- need to account for multiple conditional matches.
+
+```{r}
+find_related_trends <- function(custom_keywords){
+  
+  bigram_matches <- NULL
+  conditional_matches <- NULL
+  
+  # calculate bigrams if necessary
+  if (sum(custom_keywords$bigram) > 0) {
+    bigram_matches <- tweets_df %>%
+      unnest_tokens(word, text, token = "ngrams", n = 2, drop = FALSE) %>%
+      mutate(stem = wordStem(word)) %>%
+      filter(stem %in% c(custom_keywords %>% filter(bigram == TRUE) %>% .$stem) |
+               word %in% c(custom_keywords %>% filter(literal_string == TRUE) %>% .$stem))
+  }
+  
+  # calculate conditionals if necessary
+  if (sum(custom_keywords$conditional) > 0) {
+    conditional_keywords <- unlist(str_split(custom_keywords %>% filter(conditional == TRUE) %>% .$stem, " AND "))
+    
+    for (i in 1:seq(1, length(conditional_keywords), by = 2)) {
+      
+      conditional_grab <- inner_join(
+        trend_tokenized %>%
+          filter(word == conditional_keywords[i]), 
+        trend_tokenized %>%
+          filter(word == conditional_keywords[i+1]), 
+        by = c("status_id", "status_url", "tweet_query", "text", "favorite_count", "retweet_count", "trend", "normalized_trend")
+      ) %>%
+        mutate(word = paste(word.x, "AND", word.y),
+               stem = paste(stem.x, "AND", stem.y)) %>%
+        distinct_all()
+      
+      conditional_matches <- conditional_matches %>%
+        bind_rows(conditional_grab)
+      
+    }
+  }
+  
+  # find stem matches
+  word_matches <- trend_tokenized %>%
+    filter(stem %in% custom_keywords$stem) 
+  
+  # bind all three then paste all the instances of matching words/phrases into a single entry split by commas.
+  matching_keyword_df <- bind_rows(bigram_matches, word_matches, conditional_matches) %>%
+    group_by(trend) %>%
+    summarize(keywords = paste(word, collapse=", "),
+              n = n()) %>%
+    arrange(desc(n))
+  
+  names(matching_keyword_df) <- c(unique(custom_keywords$category), "Keywords Found", "Total")
+  
+  return(matching_keyword_df)
+  
+}
+
+find_related_trends(add_category_metadata(category_group_5))
+```
+
+```{r}
+create_category_tables <- function(category_group_df){
+  add_category_metadata(category_group_df) %>% # this line should be redundant when pulling directly from db
+    find_related_trends() %>%
+    reactable::reactable()
+}
+
+create_category_tables(category_group_2)
+```
+
+This flow is temporary for local data. 
+It will eventually grab all the user's categories and split them into individual data.frames.
+
+```{r}
+# look up all the categories the user has
+environment_df <- data.frame(environment_variables = ls(envir = .GlobalEnv)) %>%
+  filter(str_detect(environment_variables, "^(category_group_)")) %>%
+  mutate(environment_variables = as.character(environment_variables))
+
+custom_categories <- map(environment_df$environment_variables, ~ get(.x, envir = .GlobalEnv))
+```
+
+
+User options for threshold:
+
+- look at new trends and determine if trend is new to send alert
+or
+- only alert when trending for two hours
+
+
+```{r}
+map(custom_categories, create_category_tables)
+```
+
+# Page 1: Visualize current trends, their length, and keywords about them.
+
+```{r}
+trend_word_counts <- trend_tokenized %>%
+  count(word, normalized_trend) 
+```
+
+- should this be tf-idf or popular words?
+
+```{r}
+# insert top words
+important_word_df <- trend_word_counts %>%
+  filter(word != normalized_trend) %>% # is this filter a duplicate?
+  group_by(normalized_trend) %>%
+  arrange(desc(normalized_trend), desc(n)) %>%
+  slice(1:5)
+
+keywords <- important_word_df %>%
+  summarize(keywords = paste(word, collapse=", "))
+
+
+##### THIS IS BROKEN BECAUSE OF tolower AND JOIN NAMES
+hourly_trend_df <- daily_trends %>%
+  select(as_of, trend, tweet_volume) %>%
+  mutate(as_of = ymd_hms(as_of),
+         normalized_trend = tolower(trend)) %>%
+  add_count(normalized_trend, name = "hours_trending") %>%
+  inner_join(keywords, by = "normalized_trend") %>%
+  mutate(tooltip_display = paste0("Trend: ", normalized_trend, "\nKeywords: ", keywords))
+```
+
+- Fix date in title
+
+```{r, fig.height=7,fig.width = 7}
+sf <- stamp("Current Twitter Trend Guideline in Toronto on Sunday, Jan 1, 1999")
+
+p <- hourly_trend_df %>%
+  ggplot(aes(x = as_of, y = hours_trending, tooltip = tooltip_display, data_id = normalized_trend)) +
+  geom_point_interactive(aes(colour = tweet_volume, size = hours_trending), 
+                         position = position_dodge(preserve = "total", width = 1), shape = 15) +
+  
+  scale_y_continuous("Hours Trending", breaks = 1:12, labels = c("New", seq(2, 12))) +
+  scale_x_datetime("", date_breaks = "1 hour", labels = scales::date_format("%I:%M %p"), position = "top") +
+  scale_colour_gradient(low = "orange", high = "firebrick") +
+  labs(title = str_glue("{sf(daily_trends[1,]$as_of)}
+                        {max(daily_trends$as_of)} EST")) +
+  theme_minimal() +
+  #theme(legend.position = "none") +
+  expand_limits(y = max(hourly_trend_df$hours_trending) + 1)
+
+pg <- girafe(ggobj = p, width_svg = 10, height_svg = 7) 
+
+pg <- girafe_options(pg, 
+                     opts_hover(css = "fill:wheat;stroke:orange;r:5pt;"),
+                     opts_tooltip(opacity = .8,
+                                  offx = 20, offy = -10,
+                                  use_fill = TRUE, use_stroke = TRUE,
+                                  delay_mouseout = 1000),
+                     opts_zoom(min = 1, max = 3))
+
+pg
+```
+
+```{r}
+# top trends based on tweet volume, with keyword column
+hourly_trend_df %>%
+  group_by(normalized_trend) %>%
+  filter(as_of == max(as_of)) %>%
+  ungroup() %>%
+  select(normalized_trend, tweet_volume, hours_trending, keywords) %>%
+  arrange(desc(tweet_volume)) %>%
+  reactable::reactable()
+```
+
+
+```{r}
+# just the new trends this hour
+
+# filter hours_trending == NEW
+
+hourly_trend_df %>%
+  group_by(normalized_trend) %>%
+  filter(as_of == max(as_of)) %>%
+  ungroup() %>%
+  arrange(desc(hours_trending), desc(tweet_volume)) %>%
+  select(normalized_trend, tweet_volume, hours_trending, keywords) %>%
+  mutate(hours_trending = ifelse(hours_trending == 1, "NEW", hours_trending)) %>%
+  reactable::reactable()
+```
+
+# Page 2: Trend Explorer
+
+## Wordcloud
+
+- this doesn't even use tf-idf though, just count words to reduce computation
+
+```{r}
+tf_idf_df <- trend_word_counts %>% 
+  bind_tf_idf(word, normalized_trend, n) %>% # is the most popular word just the same?
+  filter(n > 1) %>%
+  mutate(normalized_trend = as.character(normalized_trend)) %>%
+  arrange(normalized_trend, desc(tf_idf))
+```
+
+```{r}
+library(wordcloud2)
+
+wordcloud_trend <- function(trend_id) {
+  
+  wordcloud2::wordcloud2(tf_idf_df %>%
+                           filter(normalized_trend == tolower(trend_id)) %>%
+                           select(word, n), size = 2, color = "random-dark")
+}
+
+wordcloud_trend("tfue")
+```
+
+## Trend Network Graph
+
+Other trends that share found in this trend.
+
+- needs more calculated ways to figure this out?
+
+```{r}
+library(igraph)
+library(networkD3)
+
+# What trends use similar words
+trend_network_trend <- function(trend_id) {
+  
+  trend_words <- trend_word_counts %>%
+    filter(normalized_trend == tolower(trend_id)) %>%
+    arrange(desc(n)) %>%
+    head(8) %>%
+    filter(n >= 3) %>%
+    .$word
+  
+  trend_tokenized %>%
+    filter(word %in% trend_words) %>%
+    count(normalized_trend) %>%
+    filter(n > 6) %>%
+    mutate(trend_og = trend_id) %>%
+    select(normalized_trend, trend_og, n) %>%
+    simpleNetwork(fontSize = 15)
+}
+
+trend_network_trend("tfue")
+```
+
+## Popular Tweets
+
+The three most liked tweets found in this trend.
+
+```{r, out.width="400px"}
+library(tweetrmd)
+library(memoise)
+
+popular_tweets <- function(trend_id) {
+  
+  top_tweets <- trend_tokenized %>%
+    filter(normalized_trend == tolower(trend_id)) %>%
+    distinct(status_url, normalized_trend, favorite_count) %>%
+    arrange(desc(normalized_trend), desc(favorite_count)) %>%
+    slice(1:3) %>%
+    .$status_url
+  
+  tweet_url <- tweetrmd::tweet_url
+  tweet_embed <- memoise(tweetrmd::tweet_embed, cache = cache_filesystem(".tweets"))
+  
+  map(top_tweets, tweet_embed)
+  
+}
+
+popular_tweets("tfue")
+```
+
+https://stackoverflow.com/questions/54953343/issues-with-scheduling-using-tasksheduler-to-run-r-script-using-rtweet-and-ex
+
+```{r}
+# create a connection
+# save the password that we can "hide" it as best as we can by collapsing it
+pw <- {
+  "masked for stack"
+}
+
+# loads the PostgreSQL driver
+drv <- dbDriver("PostgreSQL")
+# creates a connection to the postgres database
+# note that "con" will be used later in each connection to the database
+con <- dbConnect(drv, dbname = "masked for stack",
+                 host = "localhost", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# writes df to the PostgreSQL database
+dbWriteTable(con, "twitter_followers", 
+             value = twitter_followers, append = TRUE, row.names = FALSE)
+
+
+
+# "C:\Program Files\R\R-3.5.2\bin\x64\R.exe" CMD BATCH file_location.R
+
+```
+
