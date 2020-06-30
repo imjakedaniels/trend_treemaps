@@ -3,9 +3,26 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-This does not need to include trends that only last 1 hour.
+Require user inputs:
+- User can define keyword groupings
+- Make 5 groupings
 
-# The trends need to be distincted and looked up so ALL tweets with thhat trend are used for top tweet, not just a few.
+Visuals based on keyword groupings:
+- Simplify the BLM app into a daily outlook of yesterday's trends (TreeMap)
+Drop the d3 treemap
+Allow user to switch keyword grouping
+Allow a weekly/monthly/annual view
+
+- Index of many social issue discussions in America and mark any spikes with hover information (time-series)
+Show the category tables below
+> create_category_tables(category_group_2)
+
+- Each social issue keywords have a historical volume index (histogram)
+
+Visuals based on certain trends:
+- Make an animated wordcloud for specific trends
+- Make a chatter chart for trends
+- Connected
 
 ```{r}
 library(tidyverse)
@@ -16,7 +33,7 @@ library(SnowballC)
 ```
 
 ```{r}
-desired_date_range <- seq(Sys.Date(), as.Date("2020-06-01"), by = -1)
+desired_date_range <- seq(Sys.Date(), as.Date("2020-06-14"), by = -1)
 ```
 
 ```{r}
@@ -31,11 +48,6 @@ tweets_df <- map_dfr(tweet_csvs, read_csv) %>%
 
 ```{r, warning = FALSE, error = FALSE, message = FALSE}
 trends_df <- map_dfr(trend_csvs, read_csv)
-```
-
-```{r}
-#write_csv(tweets_df, "june_tweets.csv")
-#write_csv(trends_df, "june_trends.csv")
 ```
 
 ```{r}
@@ -94,9 +106,9 @@ term_trend_history <- function(words_of_interest) {
 }
 ```
 
-# views by 3 days, this week, two weeks
-
-# switch to ranking so all can be seen?
+# this is probably not as good as the treemap
+## views by 3 days, this week, two weeks
+## switch to ranking so all can be seen?
 
 ```{r, fig.height = 10, fig.width = 15}
 term_trend_history("recession")
@@ -272,12 +284,12 @@ beepr::beep(sound = "coin")
 save_html(tagList(page_title, img, title, title2, tags$hr(), body1, body2, body3, body4, body5, pg), file = "hof_racism.html")
 ```    
 
-
-# On click, go to a popular tweet
-# TF-IDF on hover
+# Make a weekly view
+# Make a daily snapshot
 
 ```{r, fig.height=12, fig.width=12}
 library(treemap)
+library(d3treeR)
 
 treemap_trends <- function(words_of_interest, date_of_interest) {
   df <- unnested_words %>%
@@ -386,5 +398,4 @@ datatable(top_trend_counts %>%
             arrange(desc(total_indicators)) %>%
             rename(Trend = trend, `#BlackLivesMatter` = `#blacklivesmatt`, Police = polic, Racist = racist, `Total Indicators` = total_indicators))
 ```
-
 
