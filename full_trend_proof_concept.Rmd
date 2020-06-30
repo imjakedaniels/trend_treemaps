@@ -1,0 +1,390 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This does not need to include trends that only last 1 hour.
+
+# The trends need to be distincted and looked up so ALL tweets with thhat trend are used for top tweet, not just a few.
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tidytext)
+library(extrafont)
+library(SnowballC)
+```
+
+```{r}
+desired_date_range <- seq(Sys.Date(), as.Date("2020-06-01"), by = -1)
+```
+
+```{r}
+trend_csvs <- paste0("new_trends_", desired_date_range, ".csv")
+tweet_csvs <- paste0("trend_tweets_", desired_date_range, ".csv")
+```
+
+```{r, warning = FALSE, message = FALSE}
+tweets_df <- map_dfr(tweet_csvs, read_csv) %>%
+  mutate(as_of = time_collected + hours(7)) # i don't think this is working right
+```
+
+```{r, warning = FALSE, error = FALSE, message = FALSE}
+trends_df <- map_dfr(trend_csvs, read_csv)
+```
+
+```{r}
+#write_csv(tweets_df, "june_tweets.csv")
+#write_csv(trends_df, "june_trends.csv")
+```
+
+```{r}
+unnested_words <- tweets_df %>%
+    unnest_tokens(word, text, token = "tweets", drop = FALSE) %>%
+    mutate(stem = wordStem(word))
+```
+
+# User can pick words to find recent trends related to it.
+## add hover to see tf-idf words related to trend
+## Add direct trend link
+## Try this? https://newsmap-js.herokuapp.com/
+## can i save an Rdata object with the unnested tokens?
+
+```{r}
+#keyword trend monitor
+term_trend_history <- function(words_of_interest) {
+  p <- unnested_words %>%
+    filter(time_collected >= "2020-05-23") %>%
+    filter(word %in% words_of_interest) %>%
+    mutate(date_label = paste(month(time_collected, label = TRUE), day(time_collected), year(time_collected))) %>%
+    count(trend, date_label) %>%
+    filter(tolower(trend) != tolower(words_of_interest)) %>%
+    arrange(desc(n)) %>%
+    mutate(date_collected = mdy(date_label)) %>%  
+    group_by(date_collected) %>%
+    mutate(rank = 1:n()) %>%
+    ungroup() %>%
+    filter(rank <= 25) %>%
+    ggplot(aes(x = date_collected, y = rank)) +
+    geom_label(aes(label = str_wrap(trend, 10), fill = n), 
+               size = 2, 
+               family = "IBM Plex Sans SemiBold") +
+    scale_y_reverse() +
+    scale_fill_gradient(low = "white", high = "#DDD92A") +
+    scale_x_date(breaks = scales::date_breaks(width = "1 days"), 
+                 labels = scales::label_date(format = "%m/%d"), position = "top") +
+    labs(title = str_to_title(str_glue('Trends associated with "{words_of_interest}"')),
+         y = "Strength of term",
+         x = "") +
+    coord_cartesian(clip = "off") +
+    theme_minimal() +
+      theme(text = element_text(family = "IBM Plex Sans SemiBold"),
+        plot.title = element_text(family = "IBM Plex Sans SemiBold", size = 12, hjust = 0),
+        plot.subtitle =  element_text(family = "IBM Plex Sans", size = 8),
+        plot.caption = element_text(family = "IBM Plex Sans", size = 8, hjust = 0, colour = "grey50"),
+        axis.text.y = element_blank(),
+        axis.text.x = element_text(family = "IBM Plex Sans", size = 8),
+        axis.title.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        plot.margin = unit(c(1, 5, 1, 1), units = "cm"),
+        legend.position = "none")
+  
+  return(p) 
+}
+```
+
+# views by 3 days, this week, two weeks
+
+# switch to ranking so all can be seen?
+
+```{r, fig.height = 10, fig.width = 15}
+term_trend_history("recession")
+term_trend_history("climate")
+term_trend_history("obama")
+term_trend_history("racist")
+term_trend_history("police")
+term_trend_history("#blacklivesmatter")
+
+# add hover with keywords?
+```
+
+```{r, fig.height = 8, fig.width = 12}
+#keyword activity monitor
+term_volume_history <- function(words_of_interest) {
+  temp_df <- unnested_words %>%
+    filter(word %in% words_of_interest) 
+  
+  p1 <- temp_df %>%
+    filter(time_collected >= "2020-05-23") %>%
+    ggplot(aes(x = time_collected)) +
+    geom_histogram(bins = n_distinct(temp_df$time_collected)) +
+    geom_hline(yintercept = 0) +
+    scale_x_datetime(breaks = scales::date_breaks(width = "1 days"), labels = scales::label_date(format = "%m/%d")) +
+    theme(axis.text.x = element_text(vjust = 2, angle = 90)) +
+    labs(title = str_to_title(str_glue('Hourly Keyword Detection Across The Top 50 Active US Trends: "{str_to_title(words_of_interest)}"')),
+         subtitle = "US Trends are collected through Twitter API. Fifty tweets are sampled from each active. The longer the trend lasts, the more tweets are sampled. If the keyword is trending, the spikes reflect this.")
+  
+  return(p1) 
+}
+
+term_volume_history("police")
+```
+
+```{r, message = FALSE, warning = FALSE, error = FALSE}
+power_words <- c("#BlackLivesMatter", "Police", "Racist")
+
+#tweets that have a power word stem in them
+tweets_with_stem <- unnested_words %>%
+  mutate(date_label = paste(month(time_collected, label = TRUE), day(time_collected), year(time_collected))) %>% # add this to data
+  mutate(stem = wordStem(word)) %>%
+  filter(stem %in% wordStem(tolower(power_words))) 
+
+#list of trends with more than a couple power words
+trends_wanted <- tweets_with_stem %>%
+  count(trend, stem) %>%
+  group_by(trend, stem) %>%
+  summarize(total = sum(n)) %>%
+  group_by(trend) %>%
+  summarize(total = sum(total)) %>%
+  distinct(trend) %>%
+  .$trend
+
+#trend popularity ranking
+trend_popularity <- tweets_with_stem %>%
+  filter(trend %in% trends_wanted) %>%
+  count(trend, stem) %>%
+  arrange(desc(n))
+
+#all tweets of trends with a couple power words
+all_tweets <- tweets_with_stem %>%
+  filter(trend %in% trends_wanted) %>%
+  mutate(date_label = paste(month(time_collected, label = TRUE), day(time_collected), year(time_collected)))
+
+top_tweets <- all_tweets %>%
+  group_by(trend) %>%
+  filter(favorite_count == max(favorite_count)) %>%
+  mutate(text = str_glue("{text}<br><a href={status_url}>View Tweet</a>")) %>%
+  select(trend, text)
+
+wordss <- all_tweets %>%
+  filter(trend %in% trends_wanted) %>%
+  unnest_tokens(word, text, token = "tweets") %>%
+  anti_join(stop_words, by = "word") %>%
+  count(word, trend) %>%
+  filter(word != tolower(trend),
+         word != str_remove(tolower(trend), "#"),
+         word != "amp",
+         !word %in% unwanted_words) 
+
+keywords <- wordss %>%
+  group_by(trend) %>%
+  bind_tf_idf(word, trend, n) %>%
+  arrange(desc(trend), desc(n)) %>%
+  slice(1:10) %>%
+  summarize(keywords = paste(word, collapse=", "))
+```
+
+
+```{r, fig.height= 30, warning = FALSE, error = FALSE, message = FALSE}
+df <- unnested_words %>%
+  filter(stem == "racist") %>%
+  count(trend) %>%
+  left_join(top_tweets) %>%
+  left_join(keywords) %>%
+  group_by(trend, text) %>%
+  arrange(trend, desc(n)) %>%
+  filter(row_number() == 1) %>%
+  group_by(trend) %>%
+  filter(row_number() == 1) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  mutate(rank = n():1) %>%
+  #mutate(onclick = str_glue("window.open(\"{status_url}\")")) %>%
+  mutate(text = str_replace_all(text, "'", "’")) %>%
+  mutate(onclick = paste0( "alert(\"", text, "\")"))
+  
+p <- df %>%
+  ggplot(aes(x = 0, y = rank)) +
+  geom_text_interactive(aes(label = trend, size = n, 
+                            tooltip = str_wrap(text, 35),  onclick = onclick, 
+                            data_id = keywords),
+                        show.legend = FALSE, family = "IBM Plex Sans") +
+  scale_size(range = c(6, 8)) +
+  scale_y_continuous(limits = c(1,max(df$rank)), 
+                     expand = c(0, 1)) +
+  theme_void() +
+  labs(y = "Trend Popularity") +
+  coord_cartesian(clip = "off")
+
+pg <- girafe(ggobj = p, width_svg = 5, height_svg = 250) 
+
+pg <- girafe_options(pg,
+                     opts_hover(css = girafe_css(css= "fill:none;",
+                                                 text = "stroke:none;fill:blue;")),
+                     opts_sizing(rescale = TRUE, width = 0.8),
+                     opts_tooltip(opacity = .8,
+                                  offx = 20, offy = -10,
+                                  use_fill = TRUE, use_stroke = TRUE,
+                                  delay_mouseout = 1000))
+
+htmlwidgets::saveWidget(pg, 
+                        title = 'Twitter Trends Mentioning "Racist"',
+                        file="race_pop.html", selfcontained = TRUE)
+
+page_title <- tags$html(tags$head(tags$title('Racist & Anti-Racist Hall of Fame')))
+
+title <- h2("Racist & Anti-Racist", 
+             style = "font-family:Permanent Marker; color:#FFFFFFF")
+
+title2 <- h1("Hall of Fame", 
+             style = "font-family:Permanent Marker; color:#FFFFFFF")
+
+body1 <- p("This page was created to highlight US Twitter trends with conversations mentioning the term", strong("Racist."), 
+           style = "font-size:15px; font-family:Raleway; color:#FFFFFFF")
+
+body2 <- p("Trends were sampled every hour. They are ranked based on",strong("keyword detection"),"and", strong("hours trending."), 
+           style = "font-size:15px; font-family:Raleway; color:#FFFFFFF")
+
+body3 <- p(strong("Hover"), "over a trend and see a popular tweet associated with it or...",
+           style = "font-size:15px; font-family:Raleway; color:#FFFFFFF")
+
+body4 <- p( strong("Click"), "on a trend to view the tweet (for mobile).",
+           style = "font-size:15px; font-family:Raleway; color:#FFFFFFF")
+
+body5 <- p("Congratulations to all who participated (=",
+           style = "font-size:15px; font-family:Raleway; color:#FFFFFFF")
+ 
+img <- a(img(src = here::here("Black_Lives_Matter.png"), 
+             height = 100, width = 100, align = "right"), 
+         href="https://secure.actblue.com/donate/ms_blm_homepage_2019")
+
+#library(htmltools)
+
+# Percent of total current trends containing "racist"
+
+browsable(tagList(page_title, img, title, title2, tags$hr(), body1, body2, body3, body4, body5, pg))
+
+beepr::beep(sound = "coin")
+```
+
+```{r}
+save_html(tagList(page_title, img, title, title2, tags$hr(), body1, body2, body3, body4, body5, pg), file = "hof_racism.html")
+```    
+
+
+# On click, go to a popular tweet
+# TF-IDF on hover
+
+```{r, fig.height=12, fig.width=12}
+library(treemap)
+
+treemap_trends <- function(words_of_interest, date_of_interest) {
+  df <- unnested_words %>%
+    filter(word %in% words_of_interest) %>%
+    mutate(date_label = paste(month(as_of, label = TRUE), day(as_of), year(as_of))) %>% # add this to data
+    count(trend, date_label) %>%
+    filter(n > 1) %>%
+    filter(tolower(trend) != tolower(words_of_interest)) %>%
+    mutate(trend = str_wrap(trend, 10))
+
+ d3tree3(treemap(df,
+                index = c("date_label", "trend"),
+                vSize = "n",
+                vColor = "n",
+                type = "manual",
+                palette = "Blues", 
+                range=c(0, 3000),
+                algorithm = "pivotSize",
+                fontsize.labels = 20,
+                lowerbound.cex.labels = .2),
+         rootname = str_to_title(str_glue('Twitter Trends associated with "Police"')), 
+                width = "200%"
+                )
+}
+
+tree <- treemap_trends("police", "2020-05-07")
+
+tree
+```
+
+```{r}
+unwanted_words <- c("people", "ill", "aint", "#covid19", "https", "didnt", "youre", "trend", "trends", "amp", "les", "des", "dont", "arent", "hes", "shes", "heres", "theyre", "yall", "watch", "time", "shit")
+
+trends_of_interest <- unnested_words %>%
+  filter(word %in% "police") %>%
+  distinct(trend)
+
+trends_tokenized <- unnested_words %>%
+  filter(trend %in% trends_of_interest$trend) %>%
+  filter(#!str_detect(word, "^@"),
+    str_detect(word, "[a-z0-9-]+"),
+    nchar(word) > 1,
+    word != normalized_trend,
+    word != str_remove(normalized_trend, "#"),
+    !word %in% unwanted_words,
+    !str_detect(word, "https")) %>%
+  anti_join(stop_words, by = "word") %>%
+  mutate(stem = wordStem(word))
+
+trend_word_counts <- trends_tokenized %>%
+  count(word, trend) 
+
+# insert top words
+important_word_df <- trend_word_counts %>%
+  group_by(trend) %>%
+  arrange(desc(trend), desc(n)) %>%
+  slice(1:10)
+
+keywords <- important_word_df %>%
+  summarize(keywords = paste(word, collapse=", "))
+```
+
+```{r}
+top_tweets <- tweets_df %>%
+  filter(trend %in% trends_of_interest$trend) %>%
+  group_by(trend) %>%
+  filter(favorite_count == max(favorite_count)) %>%
+  mutate(text = str_glue("{text} \n\n {status_url}")) %>%
+  select(trend, text)
+```
+
+```{r}
+DT::datatable(unnested_words %>%
+                filter(word %in% "police") %>%
+                mutate(date_label = paste(month(as_of, label = TRUE), day(as_of), year(as_of))) %>% # add this to data
+                count(trend, date_label) %>%
+                left_join(keywords) %>%
+                left_join(top_tweets) %>%
+                arrange(desc(n)))
+```
+
+```{r}
+library(htmlwidgets)
+
+saveWidget(tree, file="index.html", selfcontained = TRUE)
+```
+
+# group racists, racist and racism stems to "racis"
+
+```{r}
+trend_counts <- tweets_with_stem %>%
+  count(trend, date_label, stem)
+
+trend_term_df <- trend_counts %>%
+  group_by(trend, date_label, stem) %>%
+  summarize(trend_indicators = sum(n)) %>%
+  spread(stem, trend_indicators) %>%
+  replace(is.na(.), 0)
+
+top_trend_counts <- trend_term_df %>%
+left_join(trend_counts %>%
+    group_by(trend, date_label) %>%
+  summarize(total_indicators = sum(n)))
+
+datatable(top_trend_counts %>%
+            arrange(desc(total_indicators)) %>%
+            rename(Trend = trend, `#BlackLivesMatter` = `#blacklivesmatt`, Police = polic, Racist = racist, `Total Indicators` = total_indicators))
+```
+
+
